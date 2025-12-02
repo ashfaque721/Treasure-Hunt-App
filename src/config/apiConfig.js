@@ -1,12 +1,11 @@
-export const API_BASE_URL = "https://chatbot-qy8i.onrender.com";
+export const API_BASE_URL = "https://chatbot-1-61wp.onrender.com";
 
 export const API_ENDPOINTS = {
-	LOGIN: `${API_BASE_URL}/api/login`,
-	SUBMIT_ANSWER: `${API_BASE_URL}/api/submit`,
-	ADMIN_TEAMS: `${API_BASE_URL}/api/admin/teams`,
-	ADMIN_CLEAR_PENALTY: `${API_BASE_URL}/api/admin/clear_penalty`,
-	GET_RIDDLES: `${API_BASE_URL}/api/riddles`,
+	LOGIN: `${API_BASE_URL}/user/login`,
+	GAME_ACTION: `${API_BASE_URL}/game`,
+	ADMIN_INFO: `${API_BASE_URL}/info`,
+	// This is the single endpoint for managing penalties
+	TOGGLE_PENALTY: `${API_BASE_URL}/isPenalty`,
 };
-
-// Set to false when ready to use the real backend
-export const USE_MOCK_MODE = true;
+// We are strictly using the real backend now
+export const USE_MOCK_MODE = false;

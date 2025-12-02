@@ -3,8 +3,9 @@ import {
 	Send,
 	Link as LinkIcon,
 	Trophy,
-	ShieldAlert,
 	Loader2,
+	AlertTriangle,
+	ShieldAlert,
 } from "lucide-react";
 import { apiService } from "../services/apiService";
 import { formatTimeRemaining } from "../utils/helper";
@@ -21,6 +22,7 @@ export default function GameInterface({
 	const [timeLeft, setTimeLeft] = useState("");
 	const messagesEndRef = useRef(null);
 
+	// Safety check: ensure teamData exists
 	const isPenaltyActive =
 		teamData?.penaltyEndsAt &&
 		new Date(teamData.penaltyEndsAt).getTime() > Date.now();
@@ -39,43 +41,79 @@ export default function GameInterface({
 
 	const handleSend = async (e) => {
 		e.preventDefault();
+		// Prevent sending if input is empty, already sending, OR penalty is active
 		if (!input.trim() || sending || isPenaltyActive) return;
 
 		const userText = input.trim();
 		setInput("");
 		setSending(true);
 
-		const newMsgs = [
-			...messages,
+		setMessages((prev) => [
+			...prev,
 			{ sender: "user", text: userText, timestamp: Date.now() },
-		];
-		setMessages(newMsgs);
+		]);
 
 		try {
-			const response = await apiService.submitAnswer(teamName, userText);
+			let response;
+			const lowerText = userText.toLowerCase();
 
-			setTeamData((prev) => ({
-				...prev,
-				currentStage: response.currentStage,
-				penaltyEndsAt: response.penaltyEndsAt,
-				completed: response.completed,
-			}));
+			if (lowerText === "start") {
+				// SEND: { command: "start", code: "" }
+				response = await apiService.sendGameAction(teamName, "start", null);
+			} else if (lowerText === "hint") {
+				// SEND: { command: "hint", code: "" }
+				response = await apiService.sendGameAction(teamName, "hint", null);
+			} else if (lowerText === "team_info") {
+				// SEND: { command: "team_info", code: "" }
+				response = await apiService.sendGameAction(teamName, "team_info", null);
+			} else {
+				// SEND: { command: "", code: "user_answer" }
+				response = await apiService.sendGameAction(teamName, null, userText);
+			}
+
+			// Update state logic
+			const newState = { ...(teamData || {}) };
+			let stateChanged = false;
+
+			if (response.currentStage !== undefined) {
+				newState.currentStage = response.currentStage;
+				stateChanged = true;
+			}
+
+			// If our service detected the penalty message, it added penaltyEndsAt here
+			if (response.penaltyEndsAt) {
+				newState.penaltyEndsAt = response.penaltyEndsAt;
+				stateChanged = true;
+			}
+
+			if (response.completed !== undefined) {
+				newState.completed = response.completed;
+				stateChanged = true;
+			}
+
+			if (stateChanged) {
+				setTeamData(newState);
+			}
+
+			const botText =
+				response.text || response.message || "No response text received.";
 
 			setMessages((prev) => [
 				...prev,
 				{
 					sender: "bot",
-					text: response.message,
+					text: botText,
 					image: response.image || null,
 					timestamp: Date.now(),
 				},
 			]);
-		} catch {
+		} catch (error) {
+			console.error("Game Action Error:", error);
 			setMessages((prev) => [
 				...prev,
 				{
 					sender: "bot",
-					text: "⚠️ Connection Error: Could not reach the server.",
+					text: error.message || "⚠️ Connection Error. Please try again.",
 					isError: true,
 					timestamp: Date.now(),
 				},
@@ -95,11 +133,10 @@ export default function GameInterface({
 
 	return (
 		<div className="flex flex-col h-full bg-slate-900">
-			{/* Header */}
 			<div className="bg-slate-800 border-b border-slate-700 p-4 flex items-center justify-between shadow-md z-10">
 				<div className="flex-1">
 					<div className="flex items-center gap-2">
-						<h2 className="font-bold text-white text-lg">{teamName}</h2>
+						<h2 className="font-bold text-white text-lg">Team: {teamName}</h2>
 						<button
 							onClick={copyLink}
 							className="text-slate-400 hover:text-emerald-400 p-1"
@@ -122,7 +159,6 @@ export default function GameInterface({
 				{teamData?.completed && <Trophy className="text-yellow-400 w-6 h-6" />}
 			</div>
 
-			{/* Messages */}
 			<div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900 scroll-smooth">
 				{messages.map((msg, idx) => (
 					<div
@@ -136,18 +172,21 @@ export default function GameInterface({
 								msg.sender === "user"
 									? "bg-emerald-600 text-white rounded-tr-none"
 									: msg.isError
-									? "bg-red-900/50 border border-red-700 text-red-200"
+									? "bg-red-900/80 border border-red-700 text-white"
 									: "bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none"
 							}`}
 						>
-							<p className="whitespace-pre-wrap text-sm leading-relaxed">
+							<p className="whitespace-pre-wrap text-sm leading-relaxed flex gap-2">
+								{msg.isError && (
+									<AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+								)}
 								{msg.text}
 							</p>
 							{msg.image && (
 								<div className="mt-2 rounded-lg overflow-hidden bg-black/20">
 									<img
 										src={msg.image}
-										alt="Clue"
+										alt="Riddle Clue"
 										className="w-full h-auto max-h-60 object-contain"
 									/>
 								</div>
@@ -164,11 +203,14 @@ export default function GameInterface({
 				<div ref={messagesEndRef} />
 			</div>
 
-			{/* Input */}
+			{/* Input Area - Shows penalty message or input based on state */}
 			{isPenaltyActive ? (
-				<div className="bg-red-900/20 backdrop-blur-sm border-t-2 border-red-600 p-6 flex flex-col items-center justify-center">
+				<div className="bg-red-900/20 backdrop-blur-sm border-t-2 border-red-600 p-6 flex flex-col items-center justify-center animate-in slide-in-from-bottom-2">
 					<ShieldAlert className="w-8 h-8 text-red-500 mb-2 animate-pulse" />
 					<h3 className="text-red-400 font-bold">SYSTEM LOCKED</h3>
+					<p className="text-red-300/70 text-xs mb-1">
+						Too many incorrect attempts
+					</p>
 					<div className="text-3xl font-mono font-bold text-red-500 mt-1">
 						{timeLeft}
 					</div>
@@ -186,11 +228,14 @@ export default function GameInterface({
 					<input
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
-						placeholder="Type code here..."
-						className="flex-1 bg-slate-900 text-white border border-slate-700 rounded-full px-4 py-3 focus:outline-none focus:border-emerald-500 transition-colors"
+						placeholder="Type 'start', 'hint', or your answer..."
+						// Double check: disable input if penalty is active
+						disabled={sending || isPenaltyActive}
+						className="flex-1 bg-slate-900 text-white border border-slate-700 rounded-full px-4 py-3 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 					/>
 					<button
-						disabled={sending || !input.trim()}
+						// Double check: disable button if penalty is active
+						disabled={sending || !input.trim() || isPenaltyActive}
 						type="submit"
 						className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white p-3 rounded-full shadow-lg transition-all"
 					>

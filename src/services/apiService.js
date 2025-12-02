@@ -1,122 +1,136 @@
-import { API_ENDPOINTS, USE_MOCK_MODE } from "../config/apiConfig";
+import { API_ENDPOINTS } from "../config/apiConfig";
 
-// --- MOCK BACKEND (Simulation) ---
-const mockApi = {
-	db: { teams: {} },
-
-	login: async (teamId) => {
-		await new Promise((r) => setTimeout(r, 500));
-		if (!mockApi.db.teams[teamId]) {
-			mockApi.db.teams[teamId] = {
-				id: teamId,
-				name: teamId,
-				currentStage: 0,
-				penaltyEndsAt: null,
-				completed: false,
-				wrongCount: 0,
-			};
+// Helper to parse backend errors
+const parseError = async (response) => {
+	try {
+		const text = await response.text(); // Get text first to debug HTML errors
+		try {
+			const err = JSON.parse(text);
+			if (typeof err.detail === "string") return err.detail;
+			if (Array.isArray(err.detail)) {
+				return err.detail
+					.map((e) => `${e.loc ? e.loc.join("->") : "Field"}: ${e.msg}`)
+					.join(", ");
+			}
+			return err.message || response.statusText;
+		} catch {
+			return `Server Error (${response.status}): Response was not JSON`;
 		}
-		return mockApi.db.teams[teamId];
-	},
-
-	submit: async (teamId, code) => {
-		await new Promise((r) => setTimeout(r, 800));
-		const team = mockApi.db.teams[teamId];
-
-		if (code.toLowerCase() === "start" && team.currentStage === 0) {
-			team.currentStage = 1;
-			return {
-				success: true,
-				message:
-					"Round 1: Go to the IPE library. Find book IPE-101. What color is it?",
-				currentStage: 1,
-				penaltyEndsAt: null,
-			};
-		}
-
-		if (code.toLowerCase() === "code" || code.toLowerCase() === "skip") {
-			team.currentStage += 1;
-			team.wrongCount = 0;
-			if (team.currentStage > 15) team.completed = true;
-			return {
-				success: true,
-				message: team.completed
-					? "🎉 CONGRATULATIONS! You won!"
-					: `Correct! Next clue for Stage ${team.currentStage}...`,
-				currentStage: team.currentStage,
-				penaltyEndsAt: null,
-				completed: team.completed,
-			};
-		}
-
-		team.wrongCount += 1;
-		let penalty = null;
-		let msg = `❌ Incorrect code. Attempts: ${team.wrongCount}/3`;
-
-		if (team.wrongCount >= 3) {
-			const ends = Date.now() + 30 * 60 * 1000;
-			team.penaltyEndsAt = ends;
-			penalty = ends;
-			msg = "🚫 WRONG CODE. 3 Strikes. System locked for 30 minutes.";
-		}
-
-		return {
-			success: false,
-			message: msg,
-			currentStage: team.currentStage,
-			penaltyEndsAt: penalty,
-		};
-	},
-
-	getTeams: async () => Object.values(mockApi.db.teams),
-
-	clearPenalty: async (teamId) => {
-		if (mockApi.db.teams[teamId]) {
-			mockApi.db.teams[teamId].penaltyEndsAt = null;
-			mockApi.db.teams[teamId].wrongCount = 0;
-		}
-		return { success: true };
-	},
+	} catch (e) {
+		return `Server Error (${response.status})`;
+	}
 };
 
-// --- REAL API SERVICE ---
 export const apiService = {
-	login: async (teamName) => {
-		if (USE_MOCK_MODE) return mockApi.login(teamName);
-		const response = await fetch(API_ENDPOINTS.LOGIN, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ team_id: teamName }),
-		});
-		if (!response.ok) throw new Error("API Login Failed");
-		return await response.json();
+	// POST /user/login
+	login: async (teamId, password) => {
+		try {
+			const response = await fetch(API_ENDPOINTS.LOGIN, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					team_id: teamId,
+					password: password,
+				}),
+			});
+
+			if (!response.ok) {
+				const errorMessage = await parseError(response);
+				throw new Error(errorMessage);
+			}
+			return await response.json();
+		} catch (error) {
+			console.error("Login API Error:", error);
+			throw error;
+		}
 	},
 
-	submitAnswer: async (teamName, code) => {
-		if (USE_MOCK_MODE) return mockApi.submit(teamName, code);
-		const response = await fetch(API_ENDPOINTS.SUBMIT_ANSWER, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ team_id: teamName, code: code }),
-		});
-		if (!response.ok) throw new Error("API Submit Failed");
-		return await response.json();
+	// POST /game
+	sendGameAction: async (teamId, command, code) => {
+		try {
+			const payload = {
+				team_id: teamId,
+				command: command ? command : null,
+				code: code ? code : null,
+			};
+
+			const response = await fetch(API_ENDPOINTS.GAME_ACTION, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+
+			if (!response.ok) {
+				if (response.status === 500) {
+					throw new Error("Server Error (500). Possible invalid Team ID.");
+				}
+				const errorMessage = await parseError(response);
+				throw new Error(errorMessage);
+			}
+
+			const data = await response.json();
+
+			let penaltyTime = data?.penalty_ends_at || data?.penaltyEndsAt;
+
+			if (
+				!penaltyTime &&
+				data?.message === "You have given 3 consecutive wrong answers!!!"
+			) {
+				console.warn("Penalty triggered by message content");
+				penaltyTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+			}
+
+			return {
+				...data,
+				penaltyEndsAt: penaltyTime,
+			};
+		} catch (error) {
+			console.error("Game API Error:", error);
+			throw error;
+		}
 	},
 
-	getAdminTeams: async () => {
-		if (USE_MOCK_MODE) return mockApi.getTeams();
-		const response = await fetch(API_ENDPOINTS.ADMIN_TEAMS);
-		if (!response.ok) throw new Error("Admin Fetch Failed");
-		return await response.json();
+	// GET /info
+	getAdminInfo: async () => {
+		try {
+			const response = await fetch(API_ENDPOINTS.ADMIN_INFO);
+			if (!response.ok) {
+				const errorMessage = await parseError(response);
+				throw new Error(errorMessage);
+			}
+			return await response.json();
+		} catch (error) {
+			console.error("Admin API Error:", error);
+			throw error;
+		}
 	},
 
+	// Helper: Clear penalty = set isPenalty to false
 	clearPenalty: async (teamId) => {
-		if (USE_MOCK_MODE) return mockApi.clearPenalty(teamId);
-		const response = await fetch(API_ENDPOINTS.ADMIN_CLEAR_PENALTY, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ team_id: teamId }),
-		});
-		return await response.json();
+		return apiService.togglePenalty(teamId, false);
+	},
+
+	// POST /isPenalty
+	// Payload: { team_id: "...", isPenalty: boolean }
+	togglePenalty: async (teamId, isPenalty) => {
+		try {
+			const response = await fetch(API_ENDPOINTS.TOGGLE_PENALTY, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					team_id: teamId,
+					isPenalty: isPenalty,
+				}),
+			});
+
+			if (!response.ok) {
+				const errorMessage = await parseError(response);
+				throw new Error(errorMessage);
+			}
+			return await response.json();
+		} catch (error) {
+			console.error("Toggle Penalty Error:", error);
+			throw error;
+		}
 	},
 };

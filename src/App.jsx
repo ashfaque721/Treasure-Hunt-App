@@ -20,9 +20,9 @@ export default function App() {
 		const localTeam = localStorage.getItem("ipe_active_team");
 
 		if (urlTeam) {
-			handleLoginFlow(decodeURIComponent(urlTeam));
+			setInitializing(false);
 		} else if (localTeam) {
-			handleLoginFlow(localTeam);
+			setInitializing(false);
 		} else {
 			setInitializing(false);
 		}
@@ -37,20 +37,23 @@ export default function App() {
 		}
 	}, [messages, teamName]);
 
-	const handleLoginFlow = async (name) => {
+	const handleLoginFlow = async (name, password) => {
 		const cleanName = name.trim();
 		if (!cleanName) return;
 
 		if (cleanName === "admin") {
-			setTeamName(cleanName);
-			setView("admin");
-			setInitializing(false);
+			if (password === "admin123") {
+				setTeamName(cleanName);
+				setView("admin");
+				setInitializing(false);
+			} else {
+				alert("Invalid Admin Password");
+			}
 			return;
 		}
 
 		setLoading(true);
 		setTeamName(cleanName);
-		localStorage.setItem("ipe_active_team", cleanName);
 
 		const savedChat = localStorage.getItem(getLocalStorageKey(cleanName));
 		if (savedChat) {
@@ -66,13 +69,14 @@ export default function App() {
 		}
 
 		try {
-			const data = await apiService.login(cleanName);
+			const data = await apiService.login(cleanName, password);
+			localStorage.setItem("ipe_active_team", cleanName);
 			setTeamData(data);
 			setView("game");
 		} catch (err) {
 			console.error("Login failed:", err);
-			alert("Could not sync with server. You are in offline mode.");
-			setView("game");
+			// Display the specific error message thrown by apiService
+			alert(err.message);
 		} finally {
 			setLoading(false);
 			setInitializing(false);
