@@ -3,7 +3,7 @@ import { API_ENDPOINTS } from "../config/apiConfig";
 // Helper to parse backend errors
 const parseError = async (response) => {
 	try {
-		const text = await response.text(); // Get text first to debug HTML errors
+		const text = await response.text(); // Get text first
 		try {
 			const err = JSON.parse(text);
 			if (typeof err.detail === "string") return err.detail;
@@ -53,6 +53,8 @@ export const apiService = {
 				command: command ? command : null,
 				code: code ? code : null,
 			};
+
+			console.log("Sending Game Payload:", payload);
 
 			const response = await fetch(API_ENDPOINTS.GAME_ACTION, {
 				method: "POST",
@@ -111,16 +113,21 @@ export const apiService = {
 	},
 
 	// POST /isPenalty
-	// Payload: { team_id: "...", isPenalty: boolean }
+	// Expects QUERY PARAMETERS: ?team_id=...&isPenalty=...
 	togglePenalty: async (teamId, isPenalty) => {
 		try {
-			const response = await fetch(API_ENDPOINTS.TOGGLE_PENALTY, {
+			// Construct URL with query parameters manually to be safe
+			// API_ENDPOINTS.TOGGLE_PENALTY is "/api-proxy/isPenalty"
+			const url = `${API_ENDPOINTS.TOGGLE_PENALTY}?team_id=${encodeURIComponent(
+				teamId
+			)}&isPenalty=${isPenalty}`;
+
+			console.log("Toggling Penalty URL:", url); // Debug log
+
+			const response = await fetch(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					team_id: teamId,
-					isPenalty: isPenalty,
-				}),
+				body: null, // Explicitly null body for query param request
 			});
 
 			if (!response.ok) {

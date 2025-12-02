@@ -75,8 +75,6 @@ export default function AdminPanel() {
 		if (!confirm(`${action} penalty for this team?`)) return;
 
 		try {
-			// If currently TRUE (penalty active), send FALSE to lift.
-			// If currently FALSE (no penalty), send TRUE to impose.
 			await apiService.togglePenalty(teamId, !currentStatus);
 			alert(`Penalty ${action.toLowerCase()}ed successfully.`);
 			fetchTeams();
