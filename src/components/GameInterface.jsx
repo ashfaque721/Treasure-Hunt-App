@@ -11,8 +11,8 @@ import { apiService } from "../services/apiService";
 import { formatTimeRemaining } from "../utils/helper";
 
 export default function GameInterface({
-	teamName,
-	teamData,
+	teamName, // This prop carries the Team ID
+	teamData, // This object now carries full details from /info
 	messages,
 	setMessages,
 	setTeamData,
@@ -22,26 +22,93 @@ export default function GameInterface({
 	const [timeLeft, setTimeLeft] = useState("");
 	const messagesEndRef = useRef(null);
 
-	// Safety check: ensure teamData exists
+	// Logic to determine penalty state
 	const isPenaltyActive =
-		teamData?.penaltyEndsAt &&
-		new Date(teamData.penaltyEndsAt).getTime() > Date.now();
+		teamData?.isPenalty === true ||
+		(teamData?.penaltyEndsAt &&
+			new Date(teamData.penaltyEndsAt).getTime() > Date.now());
 
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages]);
 
+	// NEW: Polling to check if penalty was lifted remotely (by Admin)
 	useEffect(() => {
 		if (!isPenaltyActive) return;
-		const interval = setInterval(() => {
-			setTimeLeft(formatTimeRemaining(teamData.penaltyEndsAt));
-		}, 1000);
+
+		const checkStatus = async () => {
+			try {
+				// We reuse the logic to fetch team info.
+				// Since we don't have a specific "getMyStatus" endpoint in your list,
+				// we can re-login (if it's stateless) OR call a lightweight endpoint.
+				// But re-calling login might be heavy/wrong side-effect.
+				// Let's use the admin info endpoint to find OUR status if possible,
+				// OR just rely on the auto-lift timer if we assume admin interaction is rare.
+
+				// Better approach: If you have a way to get *just* your team info, use it.
+				// If not, we can try to hit the /game endpoint with a dummy command (like "team_info")
+				// which shouldn't trigger a penalty, to get updated state.
+
+				// Let's use "team_info" command to sync state silently
+				const response = await apiService.sendGameAction(
+					teamName,
+					"team_info",
+					null
+				);
+
+				// Check if the response says we are free
+				if (response.isPenalty === false) {
+					setTeamData((prev) => ({
+						...prev,
+						isPenalty: false,
+						penaltyEndsAt: null,
+					}));
+				}
+			} catch (err) {
+				// If it fails, we might still be locked or server error. Ignore.
+				console.log("Silent status check failed", err);
+			}
+		};
+
+		const pollInterval = setInterval(checkStatus, 5000); // Check every 5 seconds
+		return () => clearInterval(pollInterval);
+	}, [isPenaltyActive, teamName, setTeamData]);
+
+	useEffect(() => {
+		if (!isPenaltyActive) return;
+
+		const updateTimer = () => {
+			if (teamData?.penaltyEndsAt) {
+				const remaining =
+					new Date(teamData.penaltyEndsAt).getTime() - Date.now();
+
+				if (remaining <= 0) {
+					// Time is up! Automatically lift penalty.
+					apiService
+						.togglePenalty(teamName, false)
+						.then(() => {
+							setTeamData((prev) => ({
+								...prev,
+								isPenalty: false,
+								penaltyEndsAt: null,
+							}));
+						})
+						.catch((err) => console.error("Auto-lift failed:", err));
+				} else {
+					setTimeLeft(formatTimeRemaining(teamData.penaltyEndsAt));
+				}
+			} else {
+				setTimeLeft("LOCKED");
+			}
+		};
+
+		updateTimer();
+		const interval = setInterval(updateTimer, 1000);
 		return () => clearInterval(interval);
-	}, [isPenaltyActive, teamData?.penaltyEndsAt]);
+	}, [isPenaltyActive, teamData?.penaltyEndsAt, teamName, setTeamData]);
 
 	const handleSend = async (e) => {
 		e.preventDefault();
-		// Prevent sending if input is empty, already sending, OR penalty is active
 		if (!input.trim() || sending || isPenaltyActive) return;
 
 		const userText = input.trim();
@@ -58,42 +125,23 @@ export default function GameInterface({
 			const lowerText = userText.toLowerCase();
 
 			if (lowerText === "start") {
-				// SEND: { command: "start", code: "" }
 				response = await apiService.sendGameAction(teamName, "start", null);
 			} else if (lowerText === "hint") {
-				// SEND: { command: "hint", code: "" }
 				response = await apiService.sendGameAction(teamName, "hint", null);
 			} else if (lowerText === "team_info") {
-				// SEND: { command: "team_info", code: "" }
 				response = await apiService.sendGameAction(teamName, "team_info", null);
 			} else {
-				// SEND: { command: "", code: "user_answer" }
 				response = await apiService.sendGameAction(teamName, null, userText);
 			}
 
-			// Update state logic
-			const newState = { ...(teamData || {}) };
-			let stateChanged = false;
-
-			if (response.currentStage !== undefined) {
-				newState.currentStage = response.currentStage;
-				stateChanged = true;
-			}
-
-			// If our service detected the penalty message, it added penaltyEndsAt here
-			if (response.penaltyEndsAt) {
-				newState.penaltyEndsAt = response.penaltyEndsAt;
-				stateChanged = true;
-			}
-
-			if (response.completed !== undefined) {
-				newState.completed = response.completed;
-				stateChanged = true;
-			}
-
-			if (stateChanged) {
-				setTeamData(newState);
-			}
+			// Merge new data into state
+			setTeamData((prev) => {
+				// Ensure we keep previous data if new response is sparse
+				const next = { ...prev, ...response };
+				// Fix: response might not have team_name if it's just a game action response
+				if (!next.team_name && prev.team_name) next.team_name = prev.team_name;
+				return next;
+			});
 
 			const botText =
 				response.text || response.message || "No response text received.";
@@ -131,12 +179,18 @@ export default function GameInterface({
 		alert("Link copied!");
 	};
 
+	// DISPLAY LOGIC
+	const displayName = teamData?.team_name || teamName;
+	const solvedCount = teamData?.solved_riddle_num || 0;
+
 	return (
 		<div className="flex flex-col h-full bg-slate-900">
+			{/* Header */}
 			<div className="bg-slate-800 border-b border-slate-700 p-4 flex items-center justify-between shadow-md z-10">
 				<div className="flex-1">
 					<div className="flex items-center gap-2">
-						<h2 className="font-bold text-white text-lg">Team: {teamName}</h2>
+						{/* Show Team Name instead of ID */}
+						<h2 className="font-bold text-white text-lg">{displayName}</h2>
 						<button
 							onClick={copyLink}
 							className="text-slate-400 hover:text-emerald-400 p-1"
@@ -145,7 +199,8 @@ export default function GameInterface({
 						</button>
 					</div>
 					<div className="flex items-center space-x-2 text-xs text-slate-400">
-						<span>Stage: {teamData?.currentStage || 0}</span>
+						{/* Show Solved Count */}
+						<span>Solved: {solvedCount}</span>
 						<span className="w-1 h-1 bg-slate-500 rounded-full"></span>
 						<span
 							className={
@@ -203,7 +258,7 @@ export default function GameInterface({
 				<div ref={messagesEndRef} />
 			</div>
 
-			{/* Input Area - Shows penalty message or input based on state */}
+			{/* Input */}
 			{isPenaltyActive ? (
 				<div className="bg-red-900/20 backdrop-blur-sm border-t-2 border-red-600 p-6 flex flex-col items-center justify-center animate-in slide-in-from-bottom-2">
 					<ShieldAlert className="w-8 h-8 text-red-500 mb-2 animate-pulse" />
@@ -212,7 +267,7 @@ export default function GameInterface({
 						Too many incorrect attempts
 					</p>
 					<div className="text-3xl font-mono font-bold text-red-500 mt-1">
-						{timeLeft}
+						{timeLeft || "30:00"}
 					</div>
 				</div>
 			) : teamData?.completed ? (
@@ -229,12 +284,10 @@ export default function GameInterface({
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
 						placeholder="Type 'start', 'hint', or your answer..."
-						// Double check: disable input if penalty is active
 						disabled={sending || isPenaltyActive}
 						className="flex-1 bg-slate-900 text-white border border-slate-700 rounded-full px-4 py-3 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 					/>
 					<button
-						// Double check: disable button if penalty is active
 						disabled={sending || !input.trim() || isPenaltyActive}
 						type="submit"
 						className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white p-3 rounded-full shadow-lg transition-all"

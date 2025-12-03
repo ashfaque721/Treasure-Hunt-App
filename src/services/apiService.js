@@ -3,7 +3,7 @@ import { API_ENDPOINTS } from "../config/apiConfig";
 // Helper to parse backend errors
 const parseError = async (response) => {
 	try {
-		const text = await response.text(); // Get text first
+		const text = await response.text();
 		try {
 			const err = JSON.parse(text);
 			if (typeof err.detail === "string") return err.detail;
@@ -25,6 +25,7 @@ export const apiService = {
 	// POST /user/login
 	login: async (teamId, password) => {
 		try {
+			// 1. Authenticate
 			const response = await fetch(API_ENDPOINTS.LOGIN, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -38,7 +39,37 @@ export const apiService = {
 				const errorMessage = await parseError(response);
 				throw new Error(errorMessage);
 			}
-			return await response.json();
+
+			// 2. Fetch full team details from /info to get team_name, solved_riddles, etc.
+			try {
+				const infoResponse = await fetch(API_ENDPOINTS.ADMIN_INFO);
+				if (infoResponse.ok) {
+					const data = await infoResponse.json();
+					// Find the specific team in the info array
+					const teamDetails = data.info?.find((t) => t.team_id === teamId);
+
+					if (teamDetails) {
+						// Return the rich data object
+						// Calculate penalty time if needed
+						if (teamDetails.isPenalty && !teamDetails.penaltyEndsAt) {
+							teamDetails.penaltyEndsAt = new Date(
+								Date.now() + 30 * 60 * 1000
+							).toISOString();
+						}
+						return teamDetails;
+					}
+				}
+			} catch (e) {
+				console.warn("Could not fetch team details, using defaults", e);
+			}
+
+			// Fallback if /info fails but login passed
+			return {
+				team_id: teamId,
+				team_name: teamId, // Fallback name
+				solved_riddle_num: 0,
+				message: "Login Successful",
+			};
 		} catch (error) {
 			console.error("Login API Error:", error);
 			throw error;
@@ -54,8 +85,6 @@ export const apiService = {
 				code: code ? code : null,
 			};
 
-			console.log("Sending Game Payload:", payload);
-
 			const response = await fetch(API_ENDPOINTS.GAME_ACTION, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -70,20 +99,41 @@ export const apiService = {
 				throw new Error(errorMessage);
 			}
 
-			const data = await response.json();
+			const gameResponse = await response.json();
 
-			let penaltyTime = data?.penalty_ends_at || data?.penaltyEndsAt;
+			// Fetch updated stats (like solved count) to keep UI in sync
+			let updatedStats = {};
+			try {
+				const infoResponse = await fetch(API_ENDPOINTS.ADMIN_INFO);
+				if (infoResponse.ok) {
+					const data = await infoResponse.json();
+					const teamDetails = data.info?.find((t) => t.team_id === teamId);
+					if (teamDetails) {
+						updatedStats = teamDetails;
+					}
+				}
+			} catch (e) {
+				console.warn("Background stat update failed");
+			}
+
+			// Merge Game Response with Updated Stats
+			const finalData = { ...updatedStats, ...gameResponse };
+
+			// Penalty Logic
+			let penaltyTime = finalData.penalty_ends_at || finalData.penaltyEndsAt;
 
 			if (
 				!penaltyTime &&
-				data?.message === "You have given 3 consecutive wrong answers!!!"
+				(finalData.isPenalty === true ||
+					finalData.message === "You have given 3 consecutive wrong answers!!!")
 			) {
-				console.warn("Penalty triggered by message content");
+				console.warn("Penalty triggered locally");
 				penaltyTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+				finalData.isPenalty = true; // Ensure flag is set
 			}
 
 			return {
-				...data,
+				...finalData,
 				penaltyEndsAt: penaltyTime,
 			};
 		} catch (error) {
@@ -107,27 +157,21 @@ export const apiService = {
 		}
 	},
 
-	// Helper: Clear penalty = set isPenalty to false
 	clearPenalty: async (teamId) => {
 		return apiService.togglePenalty(teamId, false);
 	},
 
 	// POST /isPenalty
-	// Expects QUERY PARAMETERS: ?team_id=...&isPenalty=...
 	togglePenalty: async (teamId, isPenalty) => {
 		try {
-			// Construct URL with query parameters manually to be safe
-			// API_ENDPOINTS.TOGGLE_PENALTY is "/api-proxy/isPenalty"
 			const url = `${API_ENDPOINTS.TOGGLE_PENALTY}?team_id=${encodeURIComponent(
 				teamId
 			)}&isPenalty=${isPenalty}`;
 
-			console.log("Toggling Penalty URL:", url); // Debug log
-
 			const response = await fetch(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: null, // Explicitly null body for query param request
+				body: null,
 			});
 
 			if (!response.ok) {
