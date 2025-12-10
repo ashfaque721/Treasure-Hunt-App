@@ -11,8 +11,8 @@ import { apiService } from "../services/apiService";
 import { formatTimeRemaining } from "../utils/helper";
 
 export default function GameInterface({
-	teamName,
-	teamData,
+	teamName, // This prop carries the Team ID
+	teamData, // This object now carries full details from /info
 	messages,
 	setMessages,
 	setTeamData,
@@ -22,24 +22,45 @@ export default function GameInterface({
 	const [timeLeft, setTimeLeft] = useState("");
 	const messagesEndRef = useRef(null);
 
-	// 1. Calculate State-based Penalty
-	const isStatePenalty =
+	// Logic to determine penalty state
+	const isPenaltyActive =
 		teamData?.isPenalty === true ||
 		(teamData?.penaltyEndsAt &&
 			new Date(teamData.penaltyEndsAt).getTime() > Date.now());
 
-	// 2. Calculate Message-based Penalty (Fallback)
-	const lastMsg = messages[messages.length - 1];
-	const isMessagePenalty =
-		lastMsg?.sender === "bot" &&
-		(lastMsg.text?.includes("You are in penalty period") ||
-			lastMsg.text?.includes("consecutive wrong answers"));
-
-	const isPenaltyActive = isStatePenalty || isMessagePenalty;
-
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages]);
+
+	// Polling to check if penalty was lifted remotely
+	useEffect(() => {
+		if (!isPenaltyActive) return;
+
+		const checkStatus = async () => {
+			try {
+				// Fetch full admin info to find our current status
+				// This is the most reliable way given the API limitations
+				const data = await apiService.getAdminInfo();
+				const myTeam = data?.info?.find((t) => t.team_id === teamName);
+
+				if (myTeam) {
+					// If server says no penalty, unlock immediately
+					if (myTeam.isPenalty === false) {
+						setTeamData((prev) => ({
+							...prev,
+							isPenalty: false,
+							penaltyEndsAt: null,
+						}));
+					}
+				}
+			} catch (err) {
+				console.log("Silent status check failed", err);
+			}
+		};
+
+		const pollInterval = setInterval(checkStatus, 5000); // Check every 5 seconds
+		return () => clearInterval(pollInterval);
+	}, [isPenaltyActive, teamName, setTeamData]);
 
 	useEffect(() => {
 		if (!isPenaltyActive) return;
@@ -101,27 +122,14 @@ export default function GameInterface({
 				response = await apiService.sendGameAction(teamName, null, userText);
 			}
 
-			// Update state logic
-			setTeamData((prev) => {
-				const next = { ...(prev || {}) };
+			// Merge new data into state
+			setTeamData((prev) => ({
+				...(prev || {}),
+				...response,
+			}));
 
-				if (response.currentStage !== undefined)
-					next.currentStage = response.currentStage;
-				if (response.isPenalty !== undefined)
-					next.isPenalty = response.isPenalty;
-				if (response.penaltyEndsAt) next.penaltyEndsAt = response.penaltyEndsAt;
-				if (response.completed !== undefined)
-					next.completed = response.completed;
-
-				return next;
-			});
-
-			// FIX: Prioritize 'message' field if 'text' is missing.
-			// This is common for error-like 200 OK responses (e.g. "Wrong answer")
 			const botText =
-				response.text ||
-				response.message ||
-				(response.image ? "" : "No response text received.");
+				response.text || response.message || "No response text received.";
 
 			setMessages((prev) => [
 				...prev,
@@ -204,15 +212,16 @@ export default function GameInterface({
 									: "bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none"
 							}`}
 						>
-							{/* Only render text p tag if there is text */}
-							{msg.text && (
-								<p className="whitespace-pre-wrap text-sm leading-relaxed flex gap-2">
-									{msg.isError && (
-										<AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-									)}
-									{msg.text}
-								</p>
-							)}
+							{/* Only render text if it exists AND it's not the fallback text combined with an image */}
+							{msg.text &&
+								(!msg.image || msg.text !== "No response text received.") && (
+									<p className="whitespace-pre-wrap text-sm leading-relaxed flex gap-2">
+										{msg.isError && (
+											<AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+										)}
+										{msg.text}
+									</p>
+								)}
 
 							{msg.image && (
 								<div className="mt-2 rounded-lg overflow-hidden bg-black/20">
