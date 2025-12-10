@@ -11,8 +11,8 @@ import { apiService } from "../services/apiService";
 import { formatTimeRemaining } from "../utils/helper";
 
 export default function GameInterface({
-	teamName, // This prop carries the Team ID
-	teamData, // This object now carries full details from /info
+	teamName,
+	teamData,
 	messages,
 	setMessages,
 	setTeamData,
@@ -22,57 +22,24 @@ export default function GameInterface({
 	const [timeLeft, setTimeLeft] = useState("");
 	const messagesEndRef = useRef(null);
 
-	// Logic to determine penalty state
-	const isPenaltyActive =
+	// 1. Calculate State-based Penalty
+	const isStatePenalty =
 		teamData?.isPenalty === true ||
 		(teamData?.penaltyEndsAt &&
 			new Date(teamData.penaltyEndsAt).getTime() > Date.now());
 
+	// 2. Calculate Message-based Penalty (Fallback)
+	const lastMsg = messages[messages.length - 1];
+	const isMessagePenalty =
+		lastMsg?.sender === "bot" &&
+		(lastMsg.text?.includes("You are in penalty period") ||
+			lastMsg.text?.includes("consecutive wrong answers"));
+
+	const isPenaltyActive = isStatePenalty || isMessagePenalty;
+
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages]);
-
-	// NEW: Polling to check if penalty was lifted remotely (by Admin)
-	useEffect(() => {
-		if (!isPenaltyActive) return;
-
-		const checkStatus = async () => {
-			try {
-				// We reuse the logic to fetch team info.
-				// Since we don't have a specific "getMyStatus" endpoint in your list,
-				// we can re-login (if it's stateless) OR call a lightweight endpoint.
-				// But re-calling login might be heavy/wrong side-effect.
-				// Let's use the admin info endpoint to find OUR status if possible,
-				// OR just rely on the auto-lift timer if we assume admin interaction is rare.
-
-				// Better approach: If you have a way to get *just* your team info, use it.
-				// If not, we can try to hit the /game endpoint with a dummy command (like "team_info")
-				// which shouldn't trigger a penalty, to get updated state.
-
-				// Let's use "team_info" command to sync state silently
-				const response = await apiService.sendGameAction(
-					teamName,
-					"team_info",
-					null
-				);
-
-				// Check if the response says we are free
-				if (response.isPenalty === false) {
-					setTeamData((prev) => ({
-						...prev,
-						isPenalty: false,
-						penaltyEndsAt: null,
-					}));
-				}
-			} catch (err) {
-				// If it fails, we might still be locked or server error. Ignore.
-				console.log("Silent status check failed", err);
-			}
-		};
-
-		const pollInterval = setInterval(checkStatus, 5000); // Check every 5 seconds
-		return () => clearInterval(pollInterval);
-	}, [isPenaltyActive, teamName, setTeamData]);
 
 	useEffect(() => {
 		if (!isPenaltyActive) return;
@@ -134,17 +101,27 @@ export default function GameInterface({
 				response = await apiService.sendGameAction(teamName, null, userText);
 			}
 
-			// Merge new data into state
+			// Update state logic
 			setTeamData((prev) => {
-				// Ensure we keep previous data if new response is sparse
-				const next = { ...prev, ...response };
-				// Fix: response might not have team_name if it's just a game action response
-				if (!next.team_name && prev.team_name) next.team_name = prev.team_name;
+				const next = { ...(prev || {}) };
+
+				if (response.currentStage !== undefined)
+					next.currentStage = response.currentStage;
+				if (response.isPenalty !== undefined)
+					next.isPenalty = response.isPenalty;
+				if (response.penaltyEndsAt) next.penaltyEndsAt = response.penaltyEndsAt;
+				if (response.completed !== undefined)
+					next.completed = response.completed;
+
 				return next;
 			});
 
+			// FIX: Prioritize 'message' field if 'text' is missing.
+			// This is common for error-like 200 OK responses (e.g. "Wrong answer")
 			const botText =
-				response.text || response.message || "No response text received.";
+				response.text ||
+				response.message ||
+				(response.image ? "" : "No response text received.");
 
 			setMessages((prev) => [
 				...prev,
@@ -179,17 +156,14 @@ export default function GameInterface({
 		alert("Link copied!");
 	};
 
-	// DISPLAY LOGIC
 	const displayName = teamData?.team_name || teamName;
 	const solvedCount = teamData?.solved_riddle_num || 0;
 
 	return (
 		<div className="flex flex-col h-full bg-slate-900">
-			{/* Header */}
 			<div className="bg-slate-800 border-b border-slate-700 p-4 flex items-center justify-between shadow-md z-10">
 				<div className="flex-1">
 					<div className="flex items-center gap-2">
-						{/* Show Team Name instead of ID */}
 						<h2 className="font-bold text-white text-lg">{displayName}</h2>
 						<button
 							onClick={copyLink}
@@ -199,7 +173,6 @@ export default function GameInterface({
 						</button>
 					</div>
 					<div className="flex items-center space-x-2 text-xs text-slate-400">
-						{/* Show Solved Count */}
 						<span>Solved: {solvedCount}</span>
 						<span className="w-1 h-1 bg-slate-500 rounded-full"></span>
 						<span
@@ -231,12 +204,16 @@ export default function GameInterface({
 									: "bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none"
 							}`}
 						>
-							<p className="whitespace-pre-wrap text-sm leading-relaxed flex gap-2">
-								{msg.isError && (
-									<AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-								)}
-								{msg.text}
-							</p>
+							{/* Only render text p tag if there is text */}
+							{msg.text && (
+								<p className="whitespace-pre-wrap text-sm leading-relaxed flex gap-2">
+									{msg.isError && (
+										<AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+									)}
+									{msg.text}
+								</p>
+							)}
+
 							{msg.image && (
 								<div className="mt-2 rounded-lg overflow-hidden bg-black/20">
 									<img
@@ -258,7 +235,6 @@ export default function GameInterface({
 				<div ref={messagesEndRef} />
 			</div>
 
-			{/* Input */}
 			{isPenaltyActive ? (
 				<div className="bg-red-900/20 backdrop-blur-sm border-t-2 border-red-600 p-6 flex flex-col items-center justify-center animate-in slide-in-from-bottom-2">
 					<ShieldAlert className="w-8 h-8 text-red-500 mb-2 animate-pulse" />
@@ -284,11 +260,11 @@ export default function GameInterface({
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
 						placeholder="Type 'start', 'hint', or your answer..."
-						disabled={sending || isPenaltyActive}
+						disabled={sending}
 						className="flex-1 bg-slate-900 text-white border border-slate-700 rounded-full px-4 py-3 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 					/>
 					<button
-						disabled={sending || !input.trim() || isPenaltyActive}
+						disabled={sending || !input.trim()}
 						type="submit"
 						className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white p-3 rounded-full shadow-lg transition-all"
 					>
