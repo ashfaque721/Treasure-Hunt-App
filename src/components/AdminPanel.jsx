@@ -150,7 +150,7 @@ export default function AdminPanel() {
 											<div className="flex justify-between text-xs text-slate-400 mb-1">
 												<span>Progress</span>
 												<span className="text-white font-medium">
-													{team.solved_riddle_num} / 15 Solved
+													{team.solved_riddle_num} / 10 Solved
 												</span>
 											</div>
 											<div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
@@ -160,7 +160,7 @@ export default function AdminPanel() {
 													}`}
 													style={{
 														width: `${
-															((team.solved_riddle_num || 0) / 15) * 100
+															((team.solved_riddle_num || 0) / 10) * 100
 														}%`,
 													}}
 												></div>

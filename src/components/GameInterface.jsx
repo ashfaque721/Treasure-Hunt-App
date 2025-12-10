@@ -165,7 +165,6 @@ export default function GameInterface({
 	};
 
 	const displayName = teamData?.team_name || teamName;
-	const solvedCount = teamData?.solved_riddle_num || 0;
 
 	return (
 		<div className="flex flex-col h-full bg-slate-900">
@@ -181,7 +180,6 @@ export default function GameInterface({
 						</button>
 					</div>
 					<div className="flex items-center space-x-2 text-xs text-slate-400">
-						<span>Solved: {solvedCount}</span>
 						<span className="w-1 h-1 bg-slate-500 rounded-full"></span>
 						<span
 							className={
